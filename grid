@@ -1,0 +1,202 @@
+####load in all the necessary R packages
+####make sure you install them first using the 'Packages' menu or the install.packages() function
+
+library(sp) 
+library(rgdal)
+library(geosphere)
+library(tidyverse)
+library(raster)
+library(here)
+library(sf)
+library(RColorBrewer)
+library(traitdataform)
+library(dggridR)
+
+
+
+#construct a global grid with hexagons with centers 5000m appart
+dggs   <- dgconstruct(area=5000, metric=TRUE, resround='nearest') 
+Resolution: 9, Area (km^2): 2591.40182758771, Spacing (km): 50.276890494384, CLS (km): 57.4411078487275
+
+
+#load in a polygon outline of south america
+#replace the "/ecometrics_project/test.shp" with the location of this same file on your computer!
+shp2 <- raster::shapefile ("/Users/User/Documents/Research Paper/SA_2/test.shp")
+#and now crop the polygon to get rid of some of the small islands we dont care about
+shp2 <- raster::crop(shp2, extent(-85,-34.78,-55.9,12.59))
+# get the grid that overlaps with your polygon of south america
+sa_grid   <- dgshptogrid(dggs, "/Users/User/Documents/Research Paper/SA_2/test.shp")
+
+
+#Plot South Africa's borders and the associated grid
+p<- ggplot() + 
+    geom_polygon(data=shp2, aes(x=long, y=lat, group=group), fill=NA, color="black")   +
+    geom_polygon(data=sa_grid,   aes(x=long, y=lat, group=group), fill="blue", alpha=0.4)   +
+    geom_path   (data=sa_grid,   aes(x=long, y=lat, group=group), alpha=0.4, color="white") +
+    coord_equal()+
+    xlab("Longitude")+
+    ylab("Latitude")
+p
+
+#extract the coordinates that definte the center of each grid hexagon:
+cellcenters   <- dgSEQNUM_to_GEO(dggs,as.numeric(unique(sa_grid$cell)))
+cellcenterpts <- data.frame(long=cellcenters$lon_deg, lat=cellcenters$lat_deg, cell=(unique(sa_grid$cell)))
+coordinates(cellcenterpts) <- ~ long + lat
+# Set the projection of the SpatialPointsDataFrame using the projection of the shapefile
+# this is necessary because different types of maps have different ways of converting the 3D globe into 2D flat maps
+proj4string(cellcenterpts) <- proj4string(shp2)
+
+#filter your giant grid so that you get only the ones that are within the outline of south america and not in the ocean
+result <- raster::intersect(cellcenterpts, shp2)
+df<-as.data.frame(result)
+my_grid<-sa_grid%>%filter(.,cell%in%df$cell)
+
+#plot again
+p<- ggplot() + 
+    geom_polygon(data=shp2, aes(x=long, y=lat, group=group), fill=NA, color="black")   +
+    geom_polygon(data=my_grid,   aes(x=long, y=lat, group=group), fill="blue", alpha=0.4)   +
+    geom_path   (data=my_grid,   aes(x=long, y=lat, group=group), alpha=0.4, color="white") +
+    coord_equal()
+p
+
+# Plot result.
+plot(result)
+
+
+#another way to plot the map points following the Vermillion et al paper:
+plot(df[,c(1,2)], col = "gray", pch = 16)
+
+#download the worldlim climate data:
+bioclim <- raster::getData("worldclim", var = "bio", res = 10)
+points<-as_tibble(cellcenterpts)
+#Extract the temperature for each sampling location.
+temperature <- raster::extract(bioclim[[1]], points[,1:2])
+
+ points<-points %>% mutate(.,temp=temperature)
+ points2<-points%>%group_by(., cell)
+ points2<-points2%>%dplyr::select(.,cell, temp)
+ grid <- merge(my_grid,points2,by.x="cell",by.y="cell")
+ 
+ #plot the temperature for each grid hex
+ ggplot()+
+     geom_polygon(data=shp2, aes(x=long, y=lat, group=group), fill=NA, color="black")+
+     geom_polygon(data=grid,   aes(x=long, y=lat, group=group, fill=temp/10))+
+     scale_fill_viridis_c(name="Temp in Degrees C")+
+     coord_equal()+
+     theme_bw()+
+     xlab("Longitude")+
+     ylab("Latitude")
+ 
+ #Extract the precipitation for each sampling location.
+ precip <- raster::extract(bioclim[[12]], points[,1:2])
+ points <- points %>% mutate(.,temp=temperature,precip=precip)
+ points2 <- points %>% group_by(., cell)
+ points2 <- points2 %>% dplyr::select(.,cell, temp,precip)
+ grid <- merge(my_grid,points2,by.x="cell",by.y="cell") 
+  
+ wet_precip <- raster::extract(bioclim[[13]], points[,1:2])
+ points <- points %>% mutate(.,temp=temperature,precip=precip, wet_precip= wet_precip)
+ points2 <- points %>% group_by(., cell)
+ points2 <- points2 %>% dplyr::select(.,cell, temp,precip, wet_precip)
+ grid <- merge(my_grid,points2,by.x="cell",by.y="cell")
+  
+ min_temp <- raster::extract(bioclim[[6]], points[,1:2])
+ points <- points %>% mutate(.,temp=temperature,precip=precip, wet_precip=wet_precip, min_temp=min_temp)
+ points2 <- points %>% group_by(., cell)
+ points2 <- points2 %>% dplyr::select(.,cell, temp,precip, wet_precip, min_temp)
+ grid <- merge(my_grid,points2,by.x="cell",by.y="cell")
+ 
+### #load the vegetation index file -- this is all now redundant (Loading NDVI)
+#NDVI<-raster("/Users/User/Documents/Research Paper/Trees/NDVI/SA_eMAH_NDVI.2019.289-298.QKM.VI_NDVI.006.2019303155348.tif")
+#plot(NDVI)
+#trim vegetation so its just whats within the continent
+#ndvi2 <- raster::intersect(NDVI, shp2)
+
+#get the vegetation index for each grid hex
+#veg <- raster::extract(NDVI, points[,1:2])
+#points.veg<-points%>%mutate(.,temp=temperature,precip=precip,vegetation=veg)
+#points2<-points.veg%>%group_by(., cell)
+#points2<-points2%>%dplyr::select(.,cell, temp,precip,vegetation)
+#grid <- merge(my_grid,points2,by.x="cell",by.y="cell")
+
+#plot it!
+#ggplot()  +
+    #geom_polygon(data=shp2, aes(x=long, y=lat, group=group), fill=NA, color="black")   +
+    #geom_polygon(data=grid,   aes(x=long, y=lat, group=group, fill=vegetation))   +
+    #scale_fill_gradientn(name = "Vegetation Index", colours = rev(terrain.colors(10))) +
+#    #scale_fill_distiller(name="Vegetation Index",palette = "Greens",direction=1)+
+    #coord_equal()+
+    #theme_bw()+
+    xlab("Longitude")+ ###
+   # ylab("Latitude")  
+    
+
+#Compliing climate data  
+climate1 <- grid
+
+ggplot( data =climate, aes((temp^(1/3)))) + geom_histogram()
+
+#read in trait data 
+traits <- read.csv("/Users/User/Documents/Research Paper/Trees/Data table for Species Level-simple.csv") 
+row.names(traits) <- traits$Scientific.Name
+#read in TERRESTIAL MAMMALS 
+geography <- raster::shapefile("/Users/User/Documents/Research Paper/TERRESTRIAL_MAMMALS/TERRESTRIAL_MAMMALS.shp") 
+
+my.geography <- geography[geography$binomial %in% traits$Scientific.Name,]
+#mapping species locality 
+sp <- SpatialPoints(climate[,2:3], proj4string = CRS(proj4string(my.geography)))
+
+o<- over(x= sp,y = my.geography, returnList = TRUE)
+
+richness <- unlist(lapply(o, function(x) length(- traits[x$binomial,"IMI"])))
+ecometric_bodymass <- unlist(lapply(o, function(x) mean(traits[x$binomial,"Body_Size_Mean"], na.rm = T)))
+ecometric_imi <- unlist(lapply(o, function(x) mean(traits[x$binomial,"IMI"], na.rm = T)))
+ 
+
+model_mass <- lm(climate[richness > 0,"Mean_veg"] ~ ecometric_bodymass[richness > 0])
+summary(model_mass)
+model_imi <- lm(climate[richness > 0,"Mean_veg"] ~ ecometric_imi[richness > 0])
+summary(model_imi)
+sd_ecometric_bodymass <- unlist(lapply(o, function(x) sd(traits[x$binomial,"Body_Size_Mean"], na.rm = T)))
+ 
+#make bins
+mveg <- range(ecometric_bodymass, na.rm = T)
+sdveg <- range(sd_ecometric_bodymass, na.rm = T) 
+mbrks <- seq(mveg[1], mveg[2], diff(mveg)/25)
+sdbrks <- seq(sdveg[1], sdveg[2], diff(sdveg)/25) 
+mbc <- .bincode(ecometric_bodymass, breaks = mbrks)
+sdbc <- .bincode(sd_ecometric_bodymass, breaks = sdbrks)
+
+obj <- array(NA,dim = c(25,25))
+for(i in 1:25){ for(j in 1:25){ dat <- round(veg[which(mbc==i & sdbc==j)])
+obj[26 - j,i] <- mean(dat, na.rm = T) } }
+
+r<- raster(extent(0,25,0,25), resolution = 1)
+#set the values to the obj
+r<- setValues(r,obj)
+
+#make the NDVI square plot
+plot(1:25, 1:25, type = "n", xlim = c(1,25), ylim = c (1,25), xaxs = "i", yaxs = "i", asp = 1, axes = F, xlab ="",
+     ylab = "") 
+rect(0, 1, 25, 25, lwd = 3)  
+#need to change the colours 
+plot(r,colours = rev(terrain.colors(10))(round(maxValue(r) - minValue(r))), add = T)
+rect(11, 9, 12, 10, lwd = 4)
+  
+#grab data from box 
+dat <- round (veg[which(mbc==12 & sdbc==10)]) 
+ 
+##anomaly plots 
+modmax <- array(data=NA, dim=length(points.veg[,1])) 
+mod <- list() 
+for (i in 1:length(points.veg[,1])) {
+  dat <- round(climate$Mean_veg[which(mbc==mbc[i]& sdbc==sdbc[i])]/10000) 
+  mod[[i]] <- density(dat,bw=1) 
+  modmax[i]<- mod[[i]]$x[which.max(mod[[i]]$y)]
+}  ##Error in density.default(dat, bw = 1) : 'x' contains missing values
+modmax <- round(modmax*10000) 
+ 
+cutoff <- 1 
+
+
+
